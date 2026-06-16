@@ -1,0 +1,668 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Trading Floor Dashboard · Warsaw</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{height:100%;overflow:hidden;font-family:"SF Mono","Fira Code","Menlo",monospace}
+button{font-family:inherit;cursor:pointer}
+::-webkit-scrollbar{width:4px}
+::-webkit-scrollbar-thumb{border-radius:4px}
+#app{height:100vh;display:flex;flex-direction:column;overflow:hidden}
+table{width:100%;border-collapse:collapse}
+</style>
+<style id="dynCSS"></style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+// ── THEMES ────────────────────────────────────────────────────────────────────
+const THEMES={
+  dark:{bg:'#06090F',sur:'#0C1220',card:'#101828',brd:'#182030',bh:'#1E2E48',
+    g:'#00D97E',r:'#F04060',a:'#F5A623',b:'#4A9EFF',
+    txt:'#DCE8F8',mut:'#3D5068',dim:'#7A90A8',sub:'#141E2E',
+    twBg:'#0C1220',tbCol:'#3D5068',tbOnBg:'#141E2E',tbOnCol:'#DCE8F8',
+    scrThumb:'#1A2840',bodyBg:'#06090F',bodyCol:'#DCE8F8',btnTheme:'☀ Light',dot:'#00D97E'},
+  light:{bg:'#EDF0F5',sur:'#FFFFFF',card:'#FFFFFF',brd:'#D8DEEA',bh:'#C0CADA',
+    g:'#1A7A4A',r:'#BE2D3A',a:'#9A6200',b:'#1E5CA8',
+    txt:'#1A2535',mut:'#7A8FA8',dim:'#9AAABB',sub:'#F0F3F8',
+    twBg:'#E4E8F0',tbCol:'#7A8FA8',tbOnBg:'#FFFFFF',tbOnCol:'#1A2535',
+    scrThumb:'#C0CADA',bodyBg:'#EDF0F5',bodyCol:'#1A2535',btnTheme:'☾ Dark',dot:'#1A7A4A'}
+};
+let T=THEMES.dark;
+function applyTheme(name){
+  T=THEMES[name];
+  document.body.style.background=T.bodyBg;
+  document.body.style.color=T.bodyCol;
+  document.getElementById('dynCSS').textContent=
+    `::-webkit-scrollbar-thumb{background:${T.scrThumb}}`+
+    `.tw{display:flex;background:${T.twBg};border-radius:7px;padding:2px;gap:2px}`+
+    `.tb{background:transparent;color:${T.tbCol};border:none;border-radius:5px;padding:3px 9px;font-size:9px;font-weight:700;white-space:nowrap}`+
+    `.tb.on{background:${T.tbOnBg};color:${T.tbOnCol}}`+
+    `th{font-size:8px;font-weight:700;letter-spacing:.1em;color:${T.mut};text-align:left;padding:4px 8px;border-bottom:1px solid ${T.brd}}`+
+    `td{font-size:11px;padding:5px 8px;border-bottom:1px solid ${T.brd};color:${T.txt};vertical-align:middle}`+
+    `tr:hover td{background:${T.sur}}`;
+}
+applyTheme('dark');
+const G=()=>T.g,R=()=>T.r,A=()=>T.a,B=()=>T.b;
+const MUT=()=>T.mut,DIM=()=>T.dim,TXT=()=>T.txt,SUR=()=>T.sur;
+const SUB=()=>T.sub,BRD=()=>T.brd,BH=()=>T.bh,CARD=()=>T.card;
+
+// ── DATA ─────────────────────────────────────────────────────────────────────
+const DESK_BUSI={
+  gross:{today:842000,mtd:3200000,ytd:87200000,target:121000000},
+  net:  {today:798000,mtd:3050000,ytd:82100000,target:115000000},
+  vol:  {today:142840,mtd:2100000,ytd:18400000,target:24000000},
+};
+const RISK_SNAP={var:1240000,varLimit:2000000,largestPos:{n:'ACE',v:920000},maDD:3,maxDD:-4200,breaches:0};
+
+const PNL_CURVE=[0,142000,98000,370000,310000,540000,680000,790000,842000];
+
+function makeDailyData(ytd,days,seed){
+  const N=110,pa=N-days,pk=ytd*(1.45+seed*0.08);
+  const cum=Array.from({length:N},(_,i)=>{
+    if(i<pa)return Math.round(pk*(i/pa+Math.sin(i*seed*1.3)*0.04));
+    return Math.round(pk+(ytd-pk)*((i-pa)/days)+Math.sin(i*seed*0.9)*Math.abs(pk-ytd)*0.02);
+  });
+  cum[N-1]=ytd;
+  const ml={0:'Jan',18:'Feb',37:'Mar',56:'Apr',74:'May',92:'Jun'};
+  return cum.map((pnl,i)=>{
+    const sl=cum.slice(Math.max(0,i-29),i+1);
+    return{i,lbl:ml[i]||'',pnl,ma:Math.round(sl.reduce((a,b)=>a+b,0)/sl.length)};
+  });
+}
+function makeTraderCurve(ytd,perf,seed){
+  const N=110,abs=Math.abs(ytd),sign=ytd>=0?1:-1,pk=abs*(1.45+seed*0.08);
+  const cum=Array.from({length:N},(_,i)=>{
+    const t=i/(N-1);
+    const shape=perf<0.4?Math.pow(t,0.5):perf>0.75?Math.pow(t,2.2):t;
+    const noise=Math.sin(i*seed*0.8)*abs*(0.03+perf*0.04)+Math.cos(i*seed*1.3)*abs*0.02;
+    if(sign<0){const pk2=abs*0.6,dec=abs*1.6;return Math.round(pk2*Math.pow(t,0.6)-dec*Math.pow(t,2.5)+noise*(1-t));}
+    return Math.round(sign*abs*shape+noise*(1-t*0.5));
+  });
+  cum[N-1]=ytd;
+  for(let k=0;k<3;k++)for(let i=1;i<N-1;i++)cum[i]=Math.round((cum[i-1]+cum[i]*2+cum[i+1])/4);
+  cum[N-1]=ytd;
+  return cum;
+}
+function norm(arr){const mx=Math.max(...arr.map(Math.abs));return arr.map(v=>mx>0?Math.round(v/mx*1000)/10:0);}
+const DESK_CUM=(()=>{const N=110,ytd=87200000,c=Array.from({length:N},(_,i)=>{const t=i/(N-1),n=Math.sin(i*0.5)*ytd*0.025+Math.cos(i*0.9)*ytd*0.015;return Math.round(ytd*(Math.pow(t,0.82)+n/ytd*(1-t)));});c[N-1]=ytd;for(let k=0;k<3;k++)for(let i=1;i<N-1;i++)c[i]=Math.round((c[i-1]+c[i]*2+c[i+1])/4);c[N-1]=ytd;return c;})();
+const NORM_DESK=norm(DESK_CUM);
+const DAILY={LXD:makeDailyData(28400,8,1),MZC:makeDailyData(156000,14,2),NRP:makeDailyData(67300,5,3)};
+
+const ALL_T=[
+  {n:'ACE',b:'B2',today:198400,mtd:680000,ytd:1840000,ytdT:2000000,p:198400,v:24310,perf:0.05,seed:1.1,
+   wr:68,avgW:28400,avgL:-8200,maxDD:-42000,recD:3,sharpe:2.8,bScore:91,pScore:88,ruleBr:0,overSz:1,stopOvr:0,cap:'High',scale:5,
+   health:{perf:24,risk:18,beh:18,proc:14,scl:16},alloc:{hist:500000,curr:750000,rec:1000000},
+   flags:[],notes:['Strong YTD — consistently above desk avg','Drawdowns well controlled','Candidate for incremental capital increase']},
+  {n:'BRX',b:'B2',today:167200,mtd:590000,ytd:1520000,ytdT:1800000,p:167200,v:18420,perf:0.12,seed:1.7,
+   wr:65,avgW:24600,avgL:-9100,maxDD:-58000,recD:4,sharpe:2.4,bScore:85,pScore:82,ruleBr:1,overSz:2,stopOvr:0,cap:'High',scale:4,
+   health:{perf:22,risk:17,beh:17,proc:13,scl:15},alloc:{hist:450000,curr:700000,rec:900000},
+   flags:[],notes:['Solid YTD performance','One rule breach in April — acknowledged and corrected']},
+  {n:'CYN',b:'B3',today:134500,mtd:480000,ytd:1180000,ytdT:1400000,p:134500,v:15670,perf:0.18,seed:2.3,
+   wr:62,avgW:21200,avgL:-10400,maxDD:-71000,recD:6,sharpe:2.1,bScore:82,pScore:79,ruleBr:1,overSz:3,stopOvr:0,cap:'Medium',scale:4,
+   health:{perf:21,risk:16,beh:16,proc:12,scl:14},alloc:{hist:400000,curr:600000,rec:750000},
+   flags:[],notes:['Consistent B3 performer','Slightly elevated oversized trades — monitor']},
+  {n:'RSH',b:'B2',today:67800,mtd:320000,ytd:890000,ytdT:1200000,p:67800,v:9120,perf:0.24,seed:4.7,
+   wr:61,avgW:18900,avgL:-11200,maxDD:-88000,recD:8,sharpe:1.9,bScore:78,pScore:75,ruleBr:2,overSz:4,stopOvr:1,cap:'Medium',scale:3,
+   health:{perf:18,risk:14,beh:15,proc:11,scl:12},alloc:{hist:400000,curr:550000,rec:600000},
+   flags:['Oversized trades increasing'],notes:['Below YTD target pace','2 rule breaches — review recommended','1 stop-loss override in March']},
+  {n:'DKL',b:'B2',today:98700,mtd:350000,ytd:780000,ytdT:1200000,p:98700,v:12100,perf:0.30,seed:2.9,
+   wr:59,avgW:17800,avgL:-12100,maxDD:-96000,recD:9,sharpe:1.7,bScore:76,pScore:74,ruleBr:2,overSz:3,stopOvr:1,cap:'Medium',scale:3,
+   health:{perf:17,risk:13,beh:15,proc:11,scl:11},alloc:{hist:400000,curr:500000,rec:500000},
+   flags:['Below target pace'],notes:['Running behind YTD target','Drawdowns trending larger — monitor']},
+  {n:'EFT',b:'B3',today:87300,mtd:198000,ytd:420000,ytdT:600000,p:87300,v:9840,perf:0.40,seed:3.5,
+   wr:57,avgW:14200,avgL:-11800,maxDD:-78000,recD:10,sharpe:1.5,bScore:73,pScore:70,ruleBr:2,overSz:3,stopOvr:0,cap:'Medium',scale:3,
+   health:{perf:15,risk:13,beh:14,proc:11,scl:10},alloc:{hist:300000,curr:400000,rec:400000},
+   flags:[],notes:['Mid-range B3 performer','Behaviour consistent — no major concerns']},
+  {n:'QBF',b:'B2',today:45600,mtd:142000,ytd:310000,ytdT:800000,p:45600,v:7890,perf:0.46,seed:4.1,
+   wr:52,avgW:12400,avgL:-13600,maxDD:-112000,recD:14,sharpe:1.2,bScore:68,pScore:65,ruleBr:3,overSz:5,stopOvr:2,cap:'Low',scale:2,
+   health:{perf:12,risk:11,beh:13,proc:10,scl:8},alloc:{hist:400000,curr:350000,rec:300000},
+   flags:['Multiple rule breaches'],notes:['Significantly below YTD target','3 rule breaches — formal review required','Consider reducing allocation']},
+  {n:'MZC',b:'B2',today:34100,mtd:98000,ytd:210000,ytdT:800000,p:34100,v:4560,perf:0.50,seed:5.3,
+   wr:50,avgW:11800,avgL:-13900,maxDD:-124000,recD:16,sharpe:1.0,bScore:64,pScore:62,ruleBr:3,overSz:6,stopOvr:2,cap:'Low',scale:2,
+   health:{perf:10,risk:10,beh:12,proc:9,scl:7},alloc:{hist:400000,curr:300000,rec:250000},
+   flags:['Significant underperformance vs target'],notes:['Well below target — intervention required','Review strategy fit and position sizing']},
+  {n:'OWV',b:'B3',today:23400,mtd:72000,ytd:170000,ytdT:500000,p:23400,v:5670,perf:0.54,seed:5.9,
+   wr:51,avgW:10200,avgL:-11400,maxDD:-89000,recD:12,sharpe:1.1,bScore:67,pScore:65,ruleBr:2,overSz:4,stopOvr:1,cap:'Low',scale:2,
+   health:{perf:11,risk:11,beh:13,proc:10,scl:8},alloc:{hist:280000,curr:280000,rec:250000},
+   flags:[],notes:['Struggling to reach consistent profitability','B3 cohort — still developing']},
+  {n:'PYK',b:'B3',today:18700,mtd:54000,ytd:98000,ytdT:500000,p:18700,v:4320,perf:0.58,seed:6.5,
+   wr:49,avgW:9800,avgL:-11200,maxDD:-94000,recD:13,sharpe:1.0,bScore:65,pScore:63,ruleBr:2,overSz:4,stopOvr:1,cap:'Low',scale:2,
+   health:{perf:10,risk:10,beh:13,proc:9,scl:7},alloc:{hist:260000,curr:260000,rec:220000},
+   flags:[],notes:['Below target for B3 stage','Development conversation recommended']},
+  {n:'LXD',b:'B3',today:12400,mtd:28400,ytd:28400,ytdT:400000,p:12400,v:3210,perf:0.65,seed:7.1,
+   wr:44,avgW:8200,avgL:-10800,maxDD:-82000,recD:18,sharpe:0.7,bScore:58,pScore:55,ruleBr:4,overSz:6,stopOvr:2,cap:'Low',scale:1,
+   health:{perf:7,risk:8,beh:11,proc:8,scl:5},alloc:{hist:250000,curr:200000,rec:150000},
+   flags:['P&L below 30d avg (8 days)','Behaviour score deteriorating'],
+   notes:['Sustained drawdown — 8 days below 30d MA','Behaviour score declining — formal review required','Size reduction recommended']},
+  {n:'NRP',b:'B4',today:9800,mtd:67300,ytd:67300,ytdT:300000,p:9800,v:2340,perf:0.62,seed:7.7,
+   wr:46,avgW:7800,avgL:-9900,maxDD:-74000,recD:15,sharpe:0.8,bScore:61,pScore:59,ruleBr:3,overSz:5,stopOvr:1,cap:'Low',scale:1,
+   health:{perf:8,risk:9,beh:12,proc:9,scl:6},alloc:{hist:220000,curr:180000,rec:150000},
+   flags:['P&L below 30d avg (5 days)'],notes:['Below 30d average for 5 days','B4 cohort — early development stage']},
+  {n:'KTB',b:'B4',today:-890,mtd:-4200,ytd:-12000,ytdT:250000,p:-890,v:1120,perf:0.78,seed:8.3,
+   wr:41,avgW:7200,avgL:-9400,maxDD:-68000,recD:20,sharpe:0.4,bScore:52,pScore:50,ruleBr:4,overSz:7,stopOvr:3,cap:'Low',scale:1,
+   health:{perf:5,risk:7,beh:10,proc:7,scl:4},alloc:{hist:200000,curr:150000,rec:100000},
+   flags:['Negative YTD','Multiple behavioural flags'],
+   notes:['Negative YTD — management attention required','3 stop overrides — critical behavioural concern','Risk limit review required']},
+  {n:'JVN',b:'B4',today:-1400,mtd:-6800,ytd:-18000,ytdT:250000,p:-1400,v:2340,perf:0.82,seed:8.9,
+   wr:40,avgW:7100,avgL:-9600,maxDD:-71000,recD:22,sharpe:0.3,bScore:49,pScore:48,ruleBr:5,overSz:8,stopOvr:3,cap:'Low',scale:1,
+   health:{perf:4,risk:6,beh:9,proc:6,scl:4},alloc:{hist:200000,curr:120000,rec:80000},
+   flags:['Negative YTD','Unusual increase in trade size','Risk override triggered'],
+   notes:['Negative YTD — formal intervention required','5 rule breaches — significant pattern','Consider suspension pending review']},
+  {n:'HWP',b:'B5',today:-2900,mtd:-14200,ytd:-45000,ytdT:200000,p:-2900,v:1870,perf:0.87,seed:9.5,
+   wr:38,avgW:6800,avgL:-9800,maxDD:-78000,recD:25,sharpe:0.2,bScore:45,pScore:44,ruleBr:5,overSz:9,stopOvr:4,cap:'Low',scale:1,
+   health:{perf:3,risk:5,beh:8,proc:5,scl:3},alloc:{hist:180000,curr:100000,rec:50000},
+   flags:['Near hard stop','Negative YTD','Behaviour score critical'],
+   notes:['At 84% of daily hard stop','Deep negative YTD — trading suspension under review']},
+  {n:'GQM',b:'B5',today:-3800,mtd:-16400,ytd:-62000,ytdT:200000,p:-3800,v:980,perf:0.93,seed:10.1,
+   wr:36,avgW:6400,avgL:-10200,maxDD:-84000,recD:28,sharpe:0.1,bScore:41,pScore:40,ruleBr:6,overSz:10,stopOvr:4,cap:'Low',scale:1,
+   health:{perf:2,risk:4,beh:7,proc:4,scl:2},alloc:{hist:180000,curr:80000,rec:0},
+   flags:['Near hard stop','Negative YTD','Reduction in productive activity'],
+   notes:['At 76% of daily hard stop','6 rule breaches — trading suspension recommended','Capital allocation to zero pending review']},
+  {n:'FZR',b:'B5',today:-4200,mtd:-18800,ytd:-78000,ytdT:200000,p:-4200,v:1240,perf:0.98,seed:10.7,
+   wr:34,avgW:6100,avgL:-10600,maxDD:-89000,recD:30,sharpe:-0.1,bScore:38,pScore:37,ruleBr:7,overSz:11,stopOvr:5,cap:'Low',scale:1,
+   health:{perf:1,risk:3,beh:6,proc:3,scl:1},alloc:{hist:180000,curr:60000,rec:0},
+   flags:['Near hard stop (84%)','Negative YTD','Critical behaviour score'],
+   notes:['CRITICAL — 84% of daily hard stop consumed','7 rule breaches this year','5 stop-loss overrides — immediate intervention required']},
+];
+ALL_T.forEach(t=>{t.normCurve=norm(makeTraderCurve(t.ytd,t.perf,t.seed));});
+const TOP5_YTD=new Set([...ALL_T].sort((a,b)=>b.ytd-a.ytd).slice(0,5).map(t=>t.n));
+const BOT5_YTD=new Set([...ALL_T].sort((a,b)=>a.ytd-b.ytd).slice(0,5).map(t=>t.n));
+const TOP_T=[...ALL_T].sort((a,b)=>b.p-a.p).slice(0,5);
+const BOT_T=[...ALL_T].sort((a,b)=>a.p-b.p).slice(0,5);
+const FLAGGED=ALL_T.filter(t=>t.flags.length>0);
+
+const ALL_P=[
+  {n:'CL',p:312400,v:18420},{n:'BRN',p:198700,v:24310},{n:'SI',p:156200,v:8640},
+  {n:'GO',p:134100,v:31200},{n:'GC',p:89400,v:5320},{n:'HO',p:41200,v:7810},
+  {n:'RB',p:28700,v:4320},{n:'PA',p:12400,v:1230},{n:'PL',p:8900,v:980},
+  {n:'NG',p:-9800,v:2340},{n:'HE',p:-18400,v:3150},{n:'LE',p:-32100,v:4210},
+  {n:'LH',p:-41800,v:5630},{n:'HO2',p:-54200,v:9870},{n:'NG2',p:-78300,v:12400},
+];
+const TOP_P=[...ALL_P].sort((a,b)=>b.p-a.p).slice(0,5);
+const BOT_P=[...ALL_P].sort((a,b)=>a.p-b.p).slice(0,5);
+const FIRM_P=[
+  {n:'CL',full:'WTI Crude Oil',p:24100000},{n:'BRN',full:'Brent Crude Oil',p:18200000},
+  {n:'GC',full:'Gold',p:9800000},{n:'NG',full:'Natural Gas',p:8400000},
+  {n:'SI',full:'Silver',p:6200000},{n:'GO',full:'Gasoil',p:5800000},
+  {n:'HG',full:'Copper',p:4100000},{n:'HO',full:'Heating Oil',p:3600000},
+  {n:'SR3',full:'SOFR 3M',p:2900000},{n:'RB',full:'RBOB Gasoline',p:2100000},
+  {n:'ZB',full:'T-Bond',p:1800000},{n:'LE',full:'Live Cattle',p:1400000},
+  {n:'PL',full:'Platinum',p:900000},{n:'HE',full:'Lean Hogs',p:600000},
+  {n:'PA',full:'Palladium',p:400000},{n:'FC',full:'Feeder Cattle',p:-200000},
+  {n:'LH',full:'Live Hogs',p:-600000},{n:'ZN',full:'10Y T-Note',p:-900000},
+  {n:'NQ',full:'Nasdaq Futures',p:-1200000},{n:'DX',full:'Dollar Index',p:-1800000},
+].sort((a,b)=>b.p-a.p);
+const FIRM_TOTAL=FIRM_P.filter(x=>x.p>0).reduce((s,x)=>s+x.p,0);
+
+const STOPS=[{n:'FZR',loss:-4200,limit:-5000,mkt:'LE',b:'B5'},{n:'GQM',loss:-3800,limit:-5000,mkt:'NG',b:'B5'},{n:'HWP',loss:-2900,limit:-4000,mkt:'HO',b:'B5'}];
+const BMA=[{n:'LXD',ytd:28400,b:'B3',d:8},{n:'MZC',ytd:156000,b:'B2',d:14},{n:'NRP',ytd:67300,b:'B4',d:5}].map(t=>({...t,ma:DAILY[t.n][DAILY[t.n].length-1].ma}));
+const VARA={hi:[{n:'ACE',v:42000,a:24000},{n:'EFT',v:31000,a:18000}],lo:[{n:'LXD',v:4200,a:18000},{n:'OWV',v:3100,a:14000},{n:'PYK',v:5800,a:12000}]};
+const BLK=[{c:'LE G27',e:'27-02-26',t:['FZR','HWP']},{c:'HE G27',e:'27-02-12',t:['GQM']},{c:'NG H27',e:'27-02-24',t:[]}];
+
+// ── HELPERS ───────────────────────────────────────────────────────────────────
+const fmt=n=>{const a=Math.abs(n),s=n<0?'−':'+';return a>=1e6?`${s}$${(a/1e6).toFixed(2)}M`:a>=1000?`${s}$${(a/1000).toFixed(0)}K`:`${s}$${a}`;};
+const fmtM=n=>{const a=Math.abs(n),s=n<0?'−':'+';return a>=1e6?`${s}$${(a/1e6).toFixed(1)}M`:a>=1000?`${s}$${(a/1000).toFixed(0)}K`:`${s}$${a}`;};
+const fv=n=>n>=1000?`${(n/1000).toFixed(0)}K`:`${n}`;
+const gc=n=>n>=0?G():R();
+const pctOf=(v,t)=>t>0?Math.round(v/t*100):0;
+const stars=n=>'★'.repeat(n)+'☆'.repeat(5-n);
+const hc=s=>s>=80?G():s>=60?A():R();
+
+function div(style,children=[]){
+  const d=document.createElement('div');if(style)Object.assign(d.style,style);
+  children.forEach(c=>{if(c!=null&&c!==false)d.appendChild(typeof c==='string'?document.createTextNode(c):c);});return d;
+}
+function span(style,text){const s=document.createElement('span');if(style)Object.assign(s.style,style);s.textContent=String(text);return s;}
+function btn(text,style,fn){const b=document.createElement('button');if(style)Object.assign(b.style,style);b.textContent=text;if(fn)b.addEventListener('click',fn);return b;}
+function mkSVG(tag,attrs){const e=document.createElementNS('http://www.w3.org/2000/svg',tag);Object.entries(attrs||{}).forEach(([k,v])=>e.setAttribute(k,v));return e;}
+function mkTag(text,color){const t=document.createElement('span');t.style.cssText=`background:${color}22;color:${color};border-radius:5px;padding:1px 7px;font-size:9px;font-weight:700;white-space:nowrap`;t.textContent=String(text);return t;}
+function mkTog(opts,active,fn){const w=document.createElement('div');w.className='tw';opts.forEach(o=>{const b=document.createElement('button');b.className='tb'+(o===active?' on':'');b.textContent=o;b.addEventListener('click',()=>fn(o));w.appendChild(b);});return w;}
+function secHdr(text,color){
+  const w=div({display:'flex',alignItems:'center',gap:'6px',marginBottom:'10px',flexShrink:'0'});
+  w.appendChild(div({width:'3px',height:'12px',background:color||B(),borderRadius:'2px'}));
+  w.appendChild(span({fontSize:'9px',fontWeight:'700',letterSpacing:'0.1em',color:MUT()},text));return w;
+}
+function progBar(pct){
+  const c=pct>=90?R():pct>=70?A():G();
+  return div({display:'flex',flexDirection:'column',gap:'3px'},[
+    div({display:'flex',justifyContent:'space-between'},[span({fontSize:'9px',color:DIM()},`${pct.toFixed(0)}% used`),span({fontSize:'9px',fontWeight:'700',color:c},pct>=90?'CRITICAL':pct>=70?'CAUTION':'—')]),
+    div({background:SUB(),borderRadius:'99px',height:'4px'},[div({width:`${Math.min(pct,100)}%`,background:c,borderRadius:'99px',height:'4px'})])
+  ]);
+}
+function hbar(pct,color){
+  const bg=div({background:SUB(),borderRadius:'99px',height:'5px',marginTop:'3px'});
+  bg.appendChild(div({width:`${Math.min(Math.max(pct,0),100)}%`,background:color||G(),borderRadius:'99px',height:'5px'}));return bg;
+}
+
+// ── SVG SPARKLINE ─────────────────────────────────────────────────────────────
+function sparkline(data,color){
+  const w=200,h=44,mn=Math.min(...data),mx=Math.max(...data),rng=mx-mn||1;
+  const x=i=>(i/(data.length-1))*w,y=v=>h-(((v-mn)/rng)*(h-4)+2);
+  const pts=data.map((v,i)=>`${x(i)},${y(v)}`).join(' ');
+  const s=mkSVG('svg',{viewBox:`0 0 ${w} ${h}`,preserveAspectRatio:'none'});
+  s.style.cssText='flex:1;height:44px;display:block';
+  const defs=mkSVG('defs'),gr=mkSVG('linearGradient',{id:'sg',x1:'0',y1:'0',x2:'0',y2:'1'});
+  const s1=mkSVG('stop',{offset:'0%'});s1.style.stopColor=color;s1.style.stopOpacity='0.35';
+  const s2=mkSVG('stop',{offset:'100%'});s2.style.stopColor=color;s2.style.stopOpacity='0';
+  gr.appendChild(s1);gr.appendChild(s2);defs.appendChild(gr);s.appendChild(defs);
+  s.appendChild(mkSVG('path',{d:'M0,'+h+' '+data.map((v,i)=>`L${x(i)},${y(v)}`).join(' ')+` L${w},${h} Z`,fill:'url(#sg)'}));
+  s.appendChild(mkSVG('polyline',{points:pts,fill:'none',stroke:color,'stroke-width':'1.5'}));return s;
+}
+
+// ── COMPARISON CHART ──────────────────────────────────────────────────────────
+function compChart(trN,deskN,tc){
+  const N=trN.length,w=700,h=220,pl=46,pr=60,pt=10,pb=24,cw=w-pl-pr,ch=h-pt-pb;
+  const all=[...trN,...deskN],mn=Math.min(...all,-5),mx=Math.max(...all,5),rng=mx-mn||1;
+  const px=i=>pl+(i/(N-1))*cw,py=v=>pt+ch-(((v-mn)/rng)*ch);
+  const s=mkSVG('svg',{viewBox:`0 0 ${w} ${h}`,preserveAspectRatio:'none'});
+  s.style.cssText='width:100%;height:220px;display:block';
+  [-100,-50,0,50,100].filter(v=>v>=mn&&v<=mx).forEach(v=>{
+    const yy=py(v);s.appendChild(mkSVG('line',{x1:pl,y1:yy,x2:w-pr,y2:yy,stroke:v===0?MUT():BRD(),'stroke-dasharray':v===0?'4,3':'3,3'}));
+    const yt=mkSVG('text',{x:pl-6,y:yy+4,'text-anchor':'end',fill:MUT(),'font-size':'9'});yt.textContent=v+'%';s.appendChild(yt);
+  });
+  const ML={0:'Jan',18:'Feb',37:'Mar',56:'Apr',74:'May',92:'Jun'};
+  Object.entries(ML).forEach(([i,l])=>{const xt=mkSVG('text',{x:px(+i),y:h-8,'text-anchor':'middle',fill:MUT(),'font-size':'9'});xt.textContent=l;s.appendChild(xt);});
+  s.appendChild(mkSVG('path',{d:'M'+px(0)+','+py(0)+' '+trN.map((v,i)=>`L${px(i)},${py(v)}`).join(' ')+` L${px(N-1)},${py(0)} Z`,fill:tc,opacity:'0.07'}));
+  s.appendChild(mkSVG('polyline',{points:deskN.map((v,i)=>`${px(i)},${py(v)}`).join(' '),fill:'none',stroke:G(),'stroke-width':'1.5','stroke-dasharray':'5,3',opacity:'0.85'}));
+  s.appendChild(mkSVG('polyline',{points:trN.map((v,i)=>`${px(i)},${py(v)}`).join(' '),fill:'none',stroke:tc,'stroke-width':'2.5'}));
+  const tf=trN[N-1],df=deskN[N-1];
+  s.appendChild(mkSVG('circle',{cx:px(N-1),cy:py(df),r:'3',fill:G()}));s.appendChild(mkSVG('circle',{cx:px(N-1),cy:py(tf),r:'4',fill:tc}));
+  const tl=mkSVG('text',{x:px(N-1)+8,y:py(tf)+4,'text-anchor':'start',fill:tc,'font-size':'10','font-weight':'700'});tl.textContent=tf.toFixed(1)+'%';s.appendChild(tl);
+  const dl=mkSVG('text',{x:px(N-1)+8,y:py(df)+4,'text-anchor':'start',fill:G(),'font-size':'10'});dl.textContent=df.toFixed(1)+'%';s.appendChild(dl);
+  return s;
+}
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+const S={tab:'FLOOR',pv:'Top 5',tv:'Top 5',modal:false,tModal:null,compModal:null,theme:'dark'};
+const set=(k,v)=>{S[k]=v;if(k==='theme')applyTheme(v);render();};
+
+// ── MODALS ────────────────────────────────────────────────────────────────────
+function mkOverlay(onClose){const ov=div({position:'fixed',inset:'0',background:'rgba(0,0,0,0.92)',zIndex:'200',display:'flex',alignItems:'center',justifyContent:'center',overflow:'auto',padding:'16px'});ov.addEventListener('click',onClose);return ov;}
+function mkModalBox(w_){const b=div({background:CARD(),border:`1px solid ${BH()}`,borderRadius:'14px',padding:'24px',width:w_||'82%',maxWidth:'920px',maxHeight:'90vh',overflowY:'auto'});b.addEventListener('click',e=>e.stopPropagation());return b;}
+function mkCloseBtn(fn){return btn('✕ Close',{background:SUB(),border:'none',color:DIM(),borderRadius:'7px',padding:'6px 14px',fontSize:'11px'},fn);}
+
+// P&L intraday modal
+function buildPnLModal(){
+  const ov=mkOverlay(()=>set('modal',false)),box=mkModalBox('80%');
+  box.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'20px'},[
+    div({},[span({fontSize:'9px',color:MUT(),letterSpacing:'0.1em',display:'block',marginBottom:'4px'},'DESK P&L — INTRADAY'),span({fontSize:'34px',fontWeight:'700',color:G(),display:'block'},'+$842,000'),span({fontSize:'10px',color:DIM(),display:'block',marginTop:'2px'},'vs +$620K yesterday · 142,840 lots')]),
+    mkCloseBtn(()=>set('modal',false))
+  ]));
+  const ch=sparkline(PNL_CURVE,G());ch.style.cssText='width:100%;height:180px;display:block';
+  box.appendChild(ch);ov.appendChild(box);return ov;
+}
+
+// YTD modal (below MA panel)
+function buildYTDModal(t){
+  const data=DAILY[t.n]||[],last=data[data.length-1]||{pnl:0,ma:0};
+  const pb=last.ma>0?Math.round((last.ma-last.pnl)/last.ma*100):0;
+  const ov=mkOverlay(()=>set('tModal',null)),box=mkModalBox('82%');
+  box.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'18px'},[
+    div({},[div({display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'},[span({fontSize:'26px',fontWeight:'700',color:TXT()},t.n),mkTag(t.b,MUT()),mkTag(`−${pb}% vs 30d avg`,A()),mkTag(`${t.d}d below`,A())]),
+    div({display:'flex',gap:'28px'},[div({},[span({fontSize:'9px',color:MUT(),display:'block',marginBottom:'2px'},'YTD P&L'),span({fontSize:'20px',fontWeight:'700',color:R()},fmt(last.pnl))]),div({},[span({fontSize:'9px',color:MUT(),display:'block',marginBottom:'2px'},'30-Day Avg'),span({fontSize:'20px',fontWeight:'700',color:A()},fmt(last.ma))]),div({},[span({fontSize:'9px',color:MUT(),display:'block',marginBottom:'2px'},'Days Below'),span({fontSize:'20px',fontWeight:'700',color:A()},String(t.d))])])]),
+    mkCloseBtn(()=>set('tModal',null))
+  ]));
+  const data2=DAILY[t.n]||[];
+  ov.appendChild(box);return ov;
+}
+
+// Full MA Dashboard modal (from Traders/Scalability/Attention tabs)
+function buildMAModal(t){
+  const hs=t.health,total=hs.perf+hs.risk+hs.beh+hs.proc+hs.scl;
+  const hColor=hc(total),tc=t.ytd>=0?B():R();
+  const tf=t.normCurve[t.normCurve.length-1],df=NORM_DESK[NORM_DESK.length-1];
+  const diff=tf-df,statusColor=diff>=5?G():diff<=-5?R():A();
+  const status=diff>=5?'OUTPERFORMING':diff<=-5?'UNDERPERFORMING':'IN LINE';
+  const ov=mkOverlay(()=>set('compModal',null)),box=mkModalBox('90%');
+
+  // Header
+  box.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:'16px'},[
+    div({},[
+      div({display:'flex',alignItems:'center',gap:'10px',marginBottom:'8px'},[
+        span({fontSize:'24px',fontWeight:'700',color:TXT()},t.n),mkTag(t.b,MUT()),
+        TOP5_YTD.has(t.n)?mkTag('TOP 5 YTD',G()):null,
+        BOT5_YTD.has(t.n)?mkTag('BTM 5 YTD',R()):null,
+        mkTag('YTD '+fmt(t.ytd),gc(t.ytd))
+      ]),
+      div({display:'flex',alignItems:'center',gap:'16px'},[
+        span({fontSize:'20px',fontWeight:'700',color:hColor},`Health Score: ${total}/100`),
+        mkTag(status,statusColor)
+      ])
+    ]),
+    mkCloseBtn(()=>set('compModal',null))
+  ]));
+
+  // Health score breakdown
+  const scoreRow=div({display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:'6px',marginBottom:'14px'});
+  [{l:'Performance',max:25,v:hs.perf},{l:'Risk Mgmt',max:20,v:hs.risk},{l:'Behaviour',max:20,v:hs.beh},{l:'Process',max:15,v:hs.proc},{l:'Scalability',max:20,v:hs.scl}].forEach(x=>{
+    const c=hc(Math.round(x.v/x.max*100));
+    const cell=div({background:SUR(),borderRadius:'6px',padding:'8px 6px',textAlign:'center'});
+    cell.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'3px'},x.l));
+    cell.appendChild(span({fontSize:'18px',fontWeight:'700',color:c},String(x.v)));
+    cell.appendChild(span({fontSize:'8px',color:DIM()},'/'+x.max));
+    cell.appendChild(hbar(Math.round(x.v/x.max*100),c));
+    scoreRow.appendChild(cell);
+  });
+  box.appendChild(scoreRow);
+
+  // Comparison chart
+  box.appendChild(div({display:'flex',gap:'20px',marginBottom:'8px'},[
+    div({display:'flex',alignItems:'center',gap:'7px'},[div({width:'20px',height:'2px',background:tc,borderRadius:'1px'}),span({fontSize:'10px',color:DIM()},`${t.n} — normalized`)]),
+    div({display:'flex',alignItems:'center',gap:'7px'},[div({width:'20px',borderTop:`2px dashed ${G()}`}),span({fontSize:'10px',color:DIM()},'Desk — normalized')]),
+    span({fontSize:'9px',color:MUT()},'100 = each series\' own peak P&L'),
+  ]));
+  box.appendChild(compChart(t.normCurve,NORM_DESK,tc));
+
+  // Two columns: Performance + Behavioural
+  const cols=div({display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginTop:'12px'});
+
+  // Performance card
+  const pc=div({background:SUR(),borderRadius:'8px',padding:'12px 14px'});
+  pc.appendChild(div({display:'flex',alignItems:'center',gap:'6px',marginBottom:'10px'}),[div({width:'3px',height:'11px',background:B(),borderRadius:'2px'}),span({fontSize:'9px',fontWeight:'700',letterSpacing:'.1em',color:MUT()},'PERFORMANCE')].forEach(x=>pc.firstElementChild.appendChild(x)));
+  const kpiRow=div({display:'grid',gridTemplateColumns:'1fr 1fr 1fr 1fr',gap:'6px',marginBottom:'10px'});
+  [{l:'Today',v:fmt(t.today),c:gc(t.today)},{l:'MTD',v:fmt(t.mtd),c:gc(t.mtd)},{l:'YTD',v:fmt(t.ytd),c:gc(t.ytd)},{l:'vs Target',v:pctOf(t.ytd,t.ytdT)+'%',c:pctOf(t.ytd,t.ytdT)>=80?A():R()}].forEach(x=>{
+    const k=div({background:SUB(),borderRadius:'5px',padding:'6px 8px'});k.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'2px'},x.l));k.appendChild(span({fontSize:'12px',fontWeight:'700',color:x.c},x.v));kpiRow.appendChild(k);
+  });
+  pc.appendChild(kpiRow);
+  [[`Win Rate`,t.wr+'%',t.wr>=55?G():t.wr>=45?A():R()],[`Avg Win Day`,fmt(t.avgW),G()],[`Avg Loss Day`,fmt(t.avgL),R()],[`Max Drawdown`,fmt(t.maxDD),R()],[`DD Recovery`,t.recD+'d',t.recD<=7?G():t.recD<=14?A():R()],[`Sharpe Ratio`,t.sharpe.toFixed(2),t.sharpe>=2?G():t.sharpe>=1?A():R()]].forEach(([k,v,c])=>{
+    const r=div({display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({fontSize:'10px',color:DIM()},k));r.appendChild(span({fontSize:'11px',fontWeight:'700',color:c},v));pc.appendChild(r);
+  });
+  cols.appendChild(pc);
+
+  // Behavioural card
+  const bc=div({background:SUR(),borderRadius:'8px',padding:'12px 14px'});
+  const bcHdr=div({display:'flex',alignItems:'center',gap:'6px',marginBottom:'10px'});bcHdr.appendChild(div({width:'3px',height:'11px',background:A(),borderRadius:'2px'}));bcHdr.appendChild(span({fontSize:'9px',fontWeight:'700',letterSpacing:'.1em',color:MUT()},'BEHAVIOURAL METRICS'));bc.appendChild(bcHdr);
+  [[`Behaviour Score`,t.bScore+'/100',hc(t.bScore)],[`Process Score`,t.pScore+'/100',hc(t.pScore)],[`Rule Breaches (YTD)`,String(t.ruleBr),t.ruleBr===0?G():t.ruleBr<=2?A():R()],[`Oversized Trades`,String(t.overSz),t.overSz<=2?G():t.overSz<=5?A():R()],[`Stop-Loss Overrides`,String(t.stopOvr),t.stopOvr===0?G():t.stopOvr<=1?A():R()],[`Market Capacity`,t.cap,t.cap==='High'?G():t.cap==='Medium'?A():R()],[`Scalability Rating`,stars(t.scale),hc(t.scale*20)]].forEach(([k,v,c])=>{
+    const r=div({display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({fontSize:'10px',color:DIM()},k));r.appendChild(span({fontSize:'11px',fontWeight:'700',color:c},v));bc.appendChild(r);
+  });
+  // Capital allocation
+  bc.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginTop:'10px',marginBottom:'6px'},'CAPITAL ALLOCATION'));
+  [[`Historical`,`$${t.alloc.hist/1000}K`,DIM()],[`Current`,`$${t.alloc.curr/1000}K`,TXT()],[`Recommended`,t.alloc.rec>0?`$${t.alloc.rec/1000}K`:'—',t.alloc.rec>t.alloc.curr?G():t.alloc.rec<t.alloc.curr?R():DIM()]].forEach(([k,v,c])=>{
+    const r=div({display:'flex',justifyContent:'space-between',padding:'4px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({fontSize:'10px',color:DIM()},k));r.appendChild(span({fontSize:'11px',fontWeight:'700',color:c},v));bc.appendChild(r);
+  });
+  cols.appendChild(bc);
+  box.appendChild(cols);
+
+  // Management notes
+  if(t.notes.length>0){
+    const nc=div({background:SUR(),borderRadius:'8px',padding:'12px 14px',marginTop:'10px'});
+    const nh=div({display:'flex',alignItems:'center',gap:'6px',marginBottom:'8px'});nh.appendChild(div({width:'3px',height:'11px',background:DIM(),borderRadius:'2px'}));nh.appendChild(span({fontSize:'9px',fontWeight:'700',letterSpacing:'.1em',color:MUT()},'MANAGEMENT NOTES'));nc.appendChild(nh);
+    t.notes.forEach(n=>{const r=div({display:'flex',gap:'6px',padding:'3px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({color:DIM(),flexShrink:'0'},'•'));r.appendChild(span({fontSize:'11px',color:TXT()},n));nc.appendChild(r);});
+    box.appendChild(nc);
+  }
+  ov.appendChild(box);return ov;
+}
+
+// ── TAB CONTENT BUILDERS ──────────────────────────────────────────────────────
+
+// FLOOR tab — existing dashboard
+function buildFloor(){
+  const prods=S.pv==='Top 5'?TOP_P:S.pv==='Btm 5'?BOT_P:S.pv==='Desk'?ALL_P:FIRM_P;
+  const trdrs=S.tv==='Top 5'?TOP_T:S.tv==='Btm 5'?BOT_T:[...ALL_T].sort((a,b)=>b.p-a.p);
+  const wrap=div({display:'flex',flexDirection:'column',flex:'1',minHeight:'0',gap:'7px',padding:'8px 12px',overflow:'hidden'});
+
+  // Metric strip
+  const strip=div({display:'grid',gridTemplateColumns:'2.2fr 1fr 1fr',gap:'7px',flexShrink:'0'});
+  const pc_=div({background:CARD(),border:`1px solid ${BH()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'row',alignItems:'center',gap:'14px',cursor:'pointer'});
+  pc_.addEventListener('click',()=>set('modal',true));
+  pc_.appendChild(div({minWidth:'130px'},[span({fontSize:'9px',color:MUT(),letterSpacing:'0.1em',display:'block',marginBottom:'3px'},'DESK P&L TODAY'),span({fontSize:'28px',fontWeight:'700',color:G(),display:'block'},'+$842K'),span({fontSize:'9px',color:DIM(),display:'block',marginTop:'2px'},'vs +$620K yesterday')]));
+  pc_.appendChild(sparkline(PNL_CURVE,G()));
+  pc_.appendChild(span({fontSize:'8px',color:B()},'↗ EXPAND'));
+  strip.appendChild(pc_);
+  const tc_=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column'});
+  tc_.appendChild(span({fontSize:'9px',color:MUT(),letterSpacing:'0.1em',marginBottom:'8px',display:'block'},'TRADERS TODAY'));
+  const tg_=div({display:'grid',gridTemplateColumns:'1fr 1fr',gap:'6px 0',flex:'1'});
+  [{l:'Profitable',v:11,c:G()},{l:'At Loss',v:3,c:R()},{l:'Near Stop',v:3,c:A()},{l:'Active',v:17,c:DIM()}].forEach(x=>tg_.appendChild(div({},[span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'1px'},x.l),span({fontSize:'20px',fontWeight:'700',color:x.c,display:'block',lineHeight:'1.1'},String(x.v))])));
+  tc_.appendChild(tg_);strip.appendChild(tc_);
+  const vc_=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column'});
+  vc_.appendChild(span({fontSize:'9px',color:MUT(),letterSpacing:'0.1em',marginBottom:'3px',display:'block'},'VOLUME TODAY'));
+  vc_.appendChild(span({fontSize:'28px',fontWeight:'700',color:TXT(),display:'block'},'142,840'));
+  vc_.appendChild(span({fontSize:'9px',color:DIM(),marginTop:'2px',display:'block'},'lots traded'));
+  strip.appendChild(vc_);wrap.appendChild(strip);
+
+  // Main grid
+  const grid=div({display:'grid',gridTemplateColumns:'1fr 1fr',gridTemplateRows:'1fr 1fr 1fr',gap:'7px',flex:'1',minHeight:'0'});
+
+  // Products
+  const prodCard=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  prodCard.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:'0',marginBottom:'10px'},[secHdr('PRODUCTS',B()),mkTog(['Top 5','Btm 5','Desk','Firm'],S.pv,v=>set('pv',v))]));
+  const pb_=div({overflowY:'auto',flex:'1'});
+  if(S.pv==='Firm'){
+    const fg=div({display:'grid',gridTemplateColumns:'36px 1fr 68px 52px',gap:'5px 0',alignContent:'start'});
+    ['','','P&L','% FIRM'].forEach((h,i)=>fg.appendChild(span({fontSize:'8px',color:MUT(),textAlign:i>=2?'right':'left',display:'block',paddingRight:i===2?'6px':'0'},h)));
+    FIRM_P.forEach(p=>{fg.appendChild(span({fontSize:'12px',fontWeight:'700',color:TXT()},p.n));fg.appendChild(span({fontSize:'10px',color:DIM(),paddingLeft:'6px'},p.full));fg.appendChild(span({fontSize:'11px',fontWeight:'700',color:gc(p.p),textAlign:'right',display:'block',paddingRight:'6px'},fmtM(p.p)));fg.appendChild(span({fontSize:'11px',fontWeight:'600',color:p.p>=0?G():R(),textAlign:'right',display:'block'},(p.p>=0?'+':'')+((p.p/FIRM_TOTAL)*100).toFixed(1)+'%'));});
+    pb_.appendChild(fg);
+  } else {
+    const pg=div({display:'grid',gridTemplateColumns:'44px 1fr 52px',gap:'6px 0',alignContent:'start'});
+    ['','P&L','LOTS'].forEach((h,i)=>pg.appendChild(span({fontSize:'8px',color:MUT(),textAlign:i>0?'right':'left',display:'block',paddingRight:i===1?'8px':'0'},h)));
+    prods.forEach(p=>{pg.appendChild(span({fontSize:'14px',fontWeight:'700',color:TXT()},p.n));pg.appendChild(span({fontSize:'12px',fontWeight:'700',color:gc(p.p),textAlign:'right',display:'block',paddingRight:'8px'},fmt(p.p)));pg.appendChild(span({fontSize:'10px',color:DIM(),textAlign:'right',display:'block'},fv(p.v)));});
+    pb_.appendChild(pg);
+  }
+  prodCard.appendChild(pb_);grid.appendChild(prodCard);
+
+  // Traders (floor view — today P&L)
+  const trdCard=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  const trh=div({display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:'0',marginBottom:'10px'});
+  trh.appendChild(secHdr('TRADERS',B()));trh.appendChild(mkTog(['Top 5','Btm 5','All'],S.tv,v=>set('tv',v)));trdCard.appendChild(trh);
+  if(S.tv==='All')trdCard.appendChild(span({fontSize:'8px',color:MUT(),marginBottom:'8px',display:'block',flexShrink:'0'},'↗ Click name — full MA dashboard'));
+  const trBody=div({overflowY:'auto',flex:'1'});
+  const trGrid=div({display:'grid',gridTemplateColumns:'40px 34px 1fr auto 52px',gap:'6px 0',alignContent:'start'});
+  ['','','P&L','','LOTS'].forEach((h,i)=>trGrid.appendChild(span({fontSize:'8px',color:MUT(),textAlign:i>=2?'right':'left',display:'block',paddingRight:i===2?'8px':'0'},h)));
+  trdrs.forEach(t=>{
+    const isAll=S.tv==='All';
+    const nameEl=span({fontSize:isAll?'12px':'13px',fontWeight:'700',color:TXT(),cursor:isAll?'pointer':'default'},t.n);
+    if(isAll){nameEl.style.textDecorationLine='underline';nameEl.style.textDecorationColor=MUT();nameEl.addEventListener('mouseenter',()=>nameEl.style.color=B());nameEl.addEventListener('mouseleave',()=>nameEl.style.color=TXT());nameEl.addEventListener('click',()=>set('compModal',t));}
+    const batchEl=div({fontSize:'9px',color:MUT(),background:SUB(),borderRadius:'4px',padding:'1px 4px',textAlign:'center',alignSelf:'center'});batchEl.textContent=t.b;
+    const badgeEl=div({alignSelf:'center',marginLeft:'4px'});
+    if(isAll){if(TOP5_YTD.has(t.n)){const bg=mkTag('TOP 5',G());bg.style.fontSize='8px';bg.style.padding='0 5px';badgeEl.appendChild(bg);}else if(BOT5_YTD.has(t.n)){const bg=mkTag('BTM 5',R());bg.style.fontSize='8px';bg.style.padding='0 5px';badgeEl.appendChild(bg);}}
+    const pVal=isAll?t.ytd:t.p;
+    trGrid.appendChild(nameEl);trGrid.appendChild(batchEl);
+    trGrid.appendChild(span({fontSize:isAll?'11px':'12px',fontWeight:'700',color:gc(pVal),textAlign:'right',display:'block',paddingRight:'8px'},fmt(pVal)));
+    trGrid.appendChild(badgeEl);
+    trGrid.appendChild(span({fontSize:'10px',color:DIM(),textAlign:'right',display:'block'},fv(t.v)));
+  });
+  trBody.appendChild(trGrid);trdCard.appendChild(trBody);grid.appendChild(trdCard);
+
+  // Hard Stop
+  const sc=div({background:CARD(),border:`1px solid ${R()}40`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  sc.appendChild(div({display:'flex',alignItems:'center',gap:'8px',flexShrink:'0',marginBottom:'10px'},[secHdr('NEAR HARD STOP',R()),mkTag(String(STOPS.length),R())]));
+  const sb=div({display:'flex',flexDirection:'column',gap:'7px',flex:'1',overflowY:'auto'});
+  STOPS.forEach(t=>{const pct=Math.abs(t.loss)/Math.abs(t.limit)*100;const r=div({background:SUR(),borderRadius:'8px',padding:'9px 11px',border:`1px solid ${pct>=90?R()+'40':BRD()}`});r.appendChild(div({display:'flex',justifyContent:'space-between',marginBottom:'6px'},[div({display:'flex',alignItems:'center',gap:'7px'},[span({fontSize:'14px',fontWeight:'700',color:TXT()},t.n),mkTag(t.b,MUT())]),span({fontSize:'14px',fontWeight:'700',color:R()},fmt(t.loss))]));r.appendChild(progBar(pct));const rl=div({marginTop:'5px'});rl.appendChild(span({fontSize:'9px',color:MUT()},`Limit: ${fmt(t.limit)}  ·  Primary: `));rl.appendChild(span({fontSize:'9px',color:A(),fontWeight:'700'},t.mkt));r.appendChild(rl);sb.appendChild(r);});
+  sc.appendChild(sb);grid.appendChild(sc);
+
+  // Below MA
+  const mc=div({background:CARD(),border:`1px solid ${A()}40`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  mc.appendChild(div({display:'flex',alignItems:'center',gap:'8px',flexShrink:'0',marginBottom:'6px'},[secHdr('P&L BELOW 30-DAY AVG',A()),mkTag(String(BMA.length),A())]));
+  mc.appendChild(span({fontSize:'8px',color:MUT(),marginBottom:'8px',display:'block',flexShrink:'0'},'↗ Click trader to view YTD chart'));
+  const mb=div({display:'flex',flexDirection:'column',gap:'7px',flex:'1',overflowY:'auto'});
+  BMA.forEach(t=>{const pb=t.ma>0?Math.round((t.ma-t.ytd)/t.ma*100):0;const r=div({background:SUR(),borderRadius:'8px',padding:'9px 11px',border:`1px solid ${BRD()}`,cursor:'pointer'});r.addEventListener('mouseenter',()=>r.style.borderColor=A()+'60');r.addEventListener('mouseleave',()=>r.style.borderColor=BRD());r.addEventListener('click',()=>set('tModal',t));r.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'5px'},[div({display:'flex',alignItems:'center',gap:'7px'},[span({fontSize:'14px',fontWeight:'700',color:TXT()},t.n),mkTag(t.b,MUT())]),div({display:'flex',alignItems:'center',gap:'8px'},[span({fontSize:'9px',color:A()},`−${pb}% · ${t.d}d`),span({fontSize:'11px',color:A()},'↗')])]));r.appendChild(div({display:'flex',gap:'20px'},[div({},[span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'1px'},'YTD P&L'),span({fontSize:'12px',fontWeight:'600',color:R()},fmt(t.ytd))]),div({},[span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'1px'},'30d Avg'),span({fontSize:'12px',color:DIM()},fmt(t.ma))])]));mb.appendChild(r);});
+  mc.appendChild(mb);grid.appendChild(mc);
+
+  // VAR
+  const vc2=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  vc2.appendChild(secHdr('VAR ALERTS — ACTIVE TRADERS',A()));
+  const vg=div({display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',flex:'1',minHeight:'0'});
+  [{k:'hi',l:'HIGH >150%',i:'↑',c:R()},{k:'lo',l:'LOW <50%',i:'↓',c:MUT()}].forEach(side=>{const col=div({display:'flex',flexDirection:'column',gap:'5px'});col.appendChild(div({display:'flex',alignItems:'center',gap:'6px',marginBottom:'4px'},[span({fontSize:'8px',fontWeight:'700',color:side.c},`${side.i} ${side.l}`),mkTag(String(VARA[side.k].length),side.c)]));VARA[side.k].forEach(t=>{const r=div({background:SUR(),borderRadius:'7px',padding:'7px 10px',border:`1px solid ${BRD()}`});r.appendChild(div({display:'flex',justifyContent:'space-between'},[span({fontSize:'13px',fontWeight:'700',color:TXT()},t.n),span({fontSize:'11px',fontWeight:'700',color:side.c},`${Math.round(t.v/t.a*100)}%`)]));r.appendChild(span({fontSize:'9px',color:DIM(),display:'block',marginTop:'2px'},`${fmt(t.v)} vs ${fmt(t.a)}`));col.appendChild(r);});vg.appendChild(col);});
+  vc2.appendChild(vg);grid.appendChild(vc2);
+
+  // Blocked
+  const blkC=div({background:CARD(),border:`1px solid ${R()}40`,borderRadius:'10px',padding:'12px 14px',display:'flex',flexDirection:'column',minHeight:'0'});
+  blkC.appendChild(div({display:'flex',alignItems:'center',gap:'8px',flexShrink:'0',marginBottom:'10px'},[secHdr('BLOCKED CONTRACTS',R()),mkTag(`${BLK.filter(c=>c.t.length).length} exposed`,R())]));
+  BLK.forEach(c=>{const r=div({background:SUR(),borderRadius:'8px',padding:'9px 11px',border:`1px solid ${c.t.length?R()+'40':BRD()}`,marginBottom:'7px'});r.appendChild(div({display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:c.t.length?'6px':'0'},[span({fontSize:'13px',fontWeight:'700',color:c.t.length?R():TXT()},c.c),span({fontSize:'9px',color:DIM()},`exp. ${c.e}`)]));if(c.t.length){const tw=div({display:'flex',gap:'5px'});c.t.forEach(t=>tw.appendChild(mkTag(t,R())));r.appendChild(tw);}else r.appendChild(span({fontSize:'9px',color:MUT()},'No exposed traders'));blkC.appendChild(r);});
+  grid.appendChild(blkC);
+
+  wrap.appendChild(grid);
+  return wrap;
+}
+
+// OVERVIEW tab — executive view
+function buildOverview(){
+  const wrap=div({overflowY:'auto',flex:'1',padding:'10px 12px',display:'flex',flexDirection:'column',gap:'8px'});
+  const g2=div({display:'grid',gridTemplateColumns:'1fr 1fr',gap:'8px'});
+
+  // Business Performance
+  const bp=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px'});
+  bp.appendChild(secHdr('BUSINESS PERFORMANCE',G()));
+  const hdrs=['Metric','Today','MTD','YTD','vs Target'];
+  const bpTbl=document.createElement('table');
+  const bpTh=document.createElement('tr');hdrs.forEach(h=>{const th=document.createElement('th');th.textContent=h;bpTh.appendChild(th);});bpTbl.appendChild(bpTh);
+  [{l:'Gross P&L',d:DESK_BUSI.gross,isV:false},{l:'Net P&L',d:DESK_BUSI.net,isV:false},{l:'Volume (lots)',d:DESK_BUSI.vol,isV:true}].forEach(({l,d,isV})=>{
+    const tr=document.createElement('tr');const pct=pctOf(d.ytd,d.target);const c=pct>=80?G():pct>=60?A():R();
+    [l,isV?fv(d.today):fmt(d.today),isV?fv(d.mtd):fmt(d.mtd),isV?fv(d.ytd):fmt(d.ytd),pct+'%'].forEach((v,i)=>{const td=document.createElement('td');td.textContent=v;if(i===0)td.style.color=DIM();else if(i<4)td.style.color=isV?TXT():gc(d.ytd);else{td.style.color=c;td.style.fontWeight='700';}tr.appendChild(td);});bpTbl.appendChild(tr);
+  });
+  bp.appendChild(bpTbl);g2.appendChild(bp);
+
+  // Risk Snapshot
+  const rs=div({background:CARD(),border:`1px solid ${R()}40`,borderRadius:'10px',padding:'12px 14px'});
+  rs.appendChild(secHdr('RISK SNAPSHOT',R()));
+  const varPct=pctOf(RISK_SNAP.var,RISK_SNAP.varLimit);
+  [[`Office VaR`,fmt(RISK_SNAP.var),B()],[`VaR Utilisation`,varPct+'%',varPct>=80?R():varPct>=60?A():G()],[`Largest Position`,RISK_SNAP.largestPos.n+' '+fmt(RISK_SNAP.largestPos.v),A()],[`MAs in Drawdown`,String(RISK_SNAP.maDD),RISK_SNAP.maDD>=5?R():A()],[`Max Intraday DD`,fmt(RISK_SNAP.maxDD),R()],[`Risk Limit Breaches`,String(RISK_SNAP.breaches),RISK_SNAP.breaches===0?G():R()]].forEach(([k,v,c])=>{
+    const r=div({display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({fontSize:'10px',color:DIM()},k));r.appendChild(span({fontSize:'11px',fontWeight:'700',color:c},v));rs.appendChild(r);
+  });
+  g2.appendChild(rs);wrap.appendChild(g2);
+
+  // Management Attention List
+  const mal=div({background:CARD(),border:`1px solid ${R()}40`,borderRadius:'10px',padding:'12px 14px'});
+  mal.appendChild(secHdr('MANAGEMENT ATTENTION LIST',R()));
+  mal.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'8px'},'↗ Click row to open full MA dashboard'));
+  const mTbl=document.createElement('table');
+  const mTh=document.createElement('tr');
+  ['MA','Batch','Flag','Today P&L','YTD P&L'].forEach(h=>{const th=document.createElement('th');th.textContent=h;mTh.appendChild(th);});mTbl.appendChild(mTh);
+  FLAGGED.forEach(t=>{
+    t.flags.forEach((flag,fi)=>{
+      const tr=document.createElement('tr');tr.style.cursor='pointer';tr.addEventListener('click',()=>set('compModal',t));
+      const fc=flag.includes('hard stop')||flag.includes('Negative')||flag.includes('critical')||flag.includes('Critical')||flag.includes('Risk override')?R():A();
+      tr.style.borderLeft=`3px solid ${fc}`;
+      [fi===0?t.n:'',fi===0?t.b:'',flag,fi===0?fmt(t.today):'',fi===0?fmt(t.ytd):''].forEach((v,i)=>{
+        const td=document.createElement('td');td.textContent=v;
+        if(i===0)td.style.fontWeight='700';if(i===2)td.style.color=fc;
+        if(i===3)td.style.color=gc(t.today);if(i===4)td.style.color=gc(t.ytd);tr.appendChild(td);
+      });mTbl.appendChild(tr);
+    });
+  });
+  mal.appendChild(mTbl);wrap.appendChild(mal);
+  return wrap;
+}
+
+// TRADERS tab
+function buildTraders(){
+  const wrap=div({overflowY:'auto',flex:'1',padding:'10px 12px'});
+  const c=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px'});
+  c.appendChild(secHdr('ALL TRADERS — YTD RANKING',B()));
+  c.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'8px'},'↗ Click any row to open full MA dashboard · TOP 5 / BTM 5 = YTD ranking'));
+  const sorted=[...ALL_T].sort((a,b)=>b.ytd-a.ytd);
+  const tbl=document.createElement('table');
+  const th=document.createElement('tr');
+  ['#','MA','Batch','Today','MTD','YTD','vs Tgt','Win%','Sharpe','Beh.','Health','Flags'].forEach(h=>{const t=document.createElement('th');t.textContent=h;th.appendChild(t);});tbl.appendChild(th);
+  sorted.forEach((t,idx)=>{
+    const tr=document.createElement('tr');tr.style.cursor='pointer';tr.addEventListener('click',()=>set('compModal',t));
+    const ht=t.health.perf+t.health.risk+t.health.beh+t.health.proc+t.health.scl;
+    [String(idx+1),t.n,t.b,fmt(t.today),fmt(t.mtd),fmt(t.ytd),pctOf(t.ytd,t.ytdT)+'%',t.wr+'%',t.sharpe.toFixed(1),t.bScore+'/100',ht+'/100',t.flags.length?t.flags.length+'⚠':'—'].forEach((v,i)=>{
+      const td=document.createElement('td');td.textContent=v;
+      if(i===1){td.style.fontWeight='700';td.style.color=TOP5_YTD.has(t.n)?G():BOT5_YTD.has(t.n)?R():TXT();}
+      if(i===3)td.style.color=gc(t.today);if(i===4)td.style.color=gc(t.mtd);if(i===5)td.style.color=gc(t.ytd);
+      if(i===6)td.style.color=pctOf(t.ytd,t.ytdT)>=80?G():pctOf(t.ytd,t.ytdT)>=60?A():R();
+      if(i===7)td.style.color=t.wr>=55?G():t.wr>=45?A():R();
+      if(i===8)td.style.color=t.sharpe>=2?G():t.sharpe>=1?A():R();
+      if(i===9)td.style.color=hc(t.bScore);if(i===10)td.style.color=hc(ht);
+      if(i===11&&t.flags.length)td.style.color=R();
+      tr.appendChild(td);
+    });tbl.appendChild(tr);
+  });
+  c.appendChild(tbl);wrap.appendChild(c);return wrap;
+}
+
+// SCALABILITY tab
+function buildScalability(){
+  const wrap=div({overflowY:'auto',flex:'1',padding:'10px 12px'});
+  const c=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px'});
+  c.appendChild(secHdr('SCALABILITY DASHBOARD','#B47FFF'));
+  c.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'8px'},'↗ Click any row for full capital allocation and MA dashboard'));
+  const tbl=document.createElement('table');
+  const th=document.createElement('tr');
+  ['MA','YTD P&L','Sharpe','Beh. Score','Process Score','Market Capacity','Rating','Curr Alloc','Rec Alloc'].forEach(h=>{const t=document.createElement('th');t.textContent=h;th.appendChild(t);});tbl.appendChild(th);
+  [...ALL_T].sort((a,b)=>b.scale-a.scale||b.ytd-a.ytd).forEach(t=>{
+    const tr=document.createElement('tr');tr.style.cursor='pointer';tr.addEventListener('click',()=>set('compModal',t));
+    [t.n,fmt(t.ytd),t.sharpe.toFixed(2),t.bScore+'/100',t.pScore+'/100',t.cap,stars(t.scale),'$'+t.alloc.curr/1000+'K',t.alloc.rec>0?'$'+t.alloc.rec/1000+'K':'—'].forEach((v,i)=>{
+      const td=document.createElement('td');td.textContent=v;
+      if(i===0)td.style.fontWeight='700';if(i===1)td.style.color=gc(t.ytd);
+      if(i===2)td.style.color=t.sharpe>=2?G():t.sharpe>=1?A():R();
+      if(i===3)td.style.color=hc(t.bScore);if(i===4)td.style.color=hc(t.pScore);
+      if(i===5)td.style.color=t.cap==='High'?G():t.cap==='Medium'?A():DIM();
+      if(i===6){td.style.color=A();td.style.letterSpacing='2px';}
+      if(i===8)td.style.color=t.alloc.rec>t.alloc.curr?G():t.alloc.rec<t.alloc.curr?R():DIM();
+      tr.appendChild(td);
+    });tbl.appendChild(tr);
+  });
+  c.appendChild(tbl);wrap.appendChild(c);return wrap;
+}
+
+// INCENTIVES tab
+function buildIncentives(){
+  const wrap=div({overflowY:'auto',flex:'1',padding:'10px 12px',display:'flex',flexDirection:'column',gap:'8px'});
+  const targets={ACE:180000,BRX:160000,CYN:140000,RSH:120000,DKL:120000,EFT:100000,QBF:90000,MZC:90000,OWV:80000,PYK:80000,LXD:70000,NRP:60000,KTB:60000,JVN:60000,HWP:50000,GQM:50000,FZR:50000};
+  const mtdTarget=2100000,mtdActual=DESK_BUSI.vol.mtd;
+  const oc=div({background:CARD(),border:`1px solid ${A()}40`,borderRadius:'10px',padding:'12px 14px'});
+  oc.appendChild(secHdr('OFFICE INCENTIVE SUMMARY',A()));
+  [[`Monthly RTs — Actual`,fv(mtdActual),'/ '+fv(mtdTarget)+' target'],[`Progress`,pctOf(mtdActual,mtdTarget)+'%','of monthly RT target']].forEach(([k,v,note])=>{const r=div({display:'flex',justifyContent:'space-between',padding:'5px 0',borderBottom:`1px solid ${BRD()}`});r.appendChild(span({fontSize:'10px',color:DIM()},k));r.appendChild(div({display:'flex',gap:'8px'},[span({fontSize:'11px',fontWeight:'700',color:pctOf(mtdActual,mtdTarget)>=80?G():pctOf(mtdActual,mtdTarget)>=60?A():R()},v),span({fontSize:'9px',color:MUT()},note)]));oc.appendChild(r);});
+  oc.appendChild(hbar(pctOf(mtdActual,mtdTarget),A()));
+  wrap.appendChild(oc);
+
+  const tc2=div({background:CARD(),border:`1px solid ${BRD()}`,borderRadius:'10px',padding:'12px 14px'});
+  tc2.appendChild(secHdr('MONTHLY RT PROGRESS — PER TRADER',A()));
+  tc2.appendChild(span({fontSize:'8px',color:MUT(),display:'block',marginBottom:'8px'},'↗ Click any row to open full MA dashboard'));
+  const tbl=document.createElement('table');
+  const th=document.createElement('tr');
+  ['MA','Batch','MTD RTs','Monthly Target','Progress','Status'].forEach(h=>{const t=document.createElement('th');t.textContent=h;th.appendChild(t);});tbl.appendChild(th);
+  [...ALL_T].sort((a,b)=>{const pa=pctOf(Math.max(a.mtd,0),targets[a.n]||50000),pb=pctOf(Math.max(b.mtd,0),targets[b.n]||50000);return pb-pa;}).forEach(t=>{
+    const tgt=targets[t.n]||50000,mtdRTs=Math.round(mtdActual/ALL_T.length*(t.ytd>500000?1.4:t.ytd>0?1.0:0.5));
+    const pct=pctOf(mtdRTs,tgt),sc=pct>=100?G():pct>=70?A():R(),st=pct>=100?'✓ On Track':pct>=70?'Near Target':'Behind';
+    const tr=document.createElement('tr');tr.style.cursor='pointer';tr.addEventListener('click',()=>set('compModal',t));
+    [t.n,t.b,fv(mtdRTs),fv(tgt),pct+'%',st].forEach((v,i)=>{const td=document.createElement('td');td.textContent=v;if(i===0)td.style.fontWeight='700';if(i===4||i===5)td.style.color=sc;tr.appendChild(td);});tbl.appendChild(tr);
+  });
+  tc2.appendChild(tbl);wrap.appendChild(tc2);return wrap;
+}
+
+// ── MAIN RENDER ──────────────────────────────────────────────────────────────
+const TABS=['FLOOR','OVERVIEW','TRADERS','SCALABILITY','INCENTIVES'];
+function render(){
+  const app=document.getElementById('app');app.innerHTML='';
+  const now=new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+  const today=new Date().toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'});
+
+  // Header
+  const hdr=div({background:T.bg,borderBottom:`1px solid ${BRD()}`,padding:'7px 12px',display:'flex',justifyContent:'space-between',alignItems:'center',flexShrink:'0'});
+  hdr.appendChild(div({display:'flex',alignItems:'center',gap:'8px'},[div({width:'7px',height:'7px',borderRadius:'50%',background:T.dot,boxShadow:`0 0 8px ${T.dot}`,flexShrink:'0'}),span({fontSize:'10px',color:MUT(),letterSpacing:'0.12em'},'TRADING FLOOR · WARSAW')]));
+  const rightBar=div({display:'flex',alignItems:'center',gap:'10px'});
+  rightBar.appendChild(span({fontSize:'10px',color:MUT()},`${today} · ${now} CET`));
+  const themBtn=btn(T.btnTheme,{background:SUB(),color:MUT(),border:`1px solid ${BRD()}`,borderRadius:'6px',padding:'3px 10px',fontSize:'9px',fontWeight:'700'},()=>set('theme',S.theme==='dark'?'light':'dark'));
+  rightBar.appendChild(themBtn);hdr.appendChild(rightBar);app.appendChild(hdr);
+
+  // Tab bar
+  const tabBar=div({background:SUR(),borderBottom:`1px solid ${BRD()}`,padding:'4px 12px',display:'flex',gap:'2px',flexShrink:'0'});
+  TABS.forEach(t=>{const b=document.createElement('button');b.className='tab tb'+(t===S.tab?' on':'');b.textContent=t;b.addEventListener('click',()=>set('tab',t));tabBar.appendChild(b);});
+  app.appendChild(tabBar);
+
+  // Content
+  const content=div({display:'flex',flexDirection:'column',flex:'1',minHeight:'0',overflow:'hidden'});
+  if(S.tab==='FLOOR') content.appendChild(buildFloor());
+  else if(S.tab==='OVERVIEW') content.appendChild(buildOverview());
+  else if(S.tab==='TRADERS') content.appendChild(buildTraders());
+  else if(S.tab==='SCALABILITY') content.appendChild(buildScalability());
+  else if(S.tab==='INCENTIVES') content.appendChild(buildIncentives());
+  app.appendChild(content);
+
+  // Modals
+  if(S.modal)app.appendChild(buildPnLModal());
+  if(S.tModal)app.appendChild(buildYTDModal(S.tModal));
+  if(S.compModal)app.appendChild(buildMAModal(S.compModal));
+}
+
+render();
+</script>
+</body>
+</html>
